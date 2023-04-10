@@ -1,0 +1,17 @@
+{
+  "name": "serverless-plugin-import-ressources",
+  "version": "0.1.0",
+  "description": "Allow to import ressource into an existing stack",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "serverless"
+  ],
+  "author": "Kevin Giguere Lacasse",
+  "license": "ISC",
+  "peerDependencies": {
+    "serverless": "^2.60 || 3"
+  }
+}
