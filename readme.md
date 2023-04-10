@@ -1,10 +1,10 @@
-# serverless-plugin-import-ressources
+# serverless-plugin-import-resources
 
 **This is highly experimental, use at your own risk.**
 
-This plugin in ment to help importing ressource into an existing stack
+This plugin in ment to help importing resources into an existing stack
 
-Currently handled ressources types
+Currently handled resources types
 - AWS::S3::Bucket
 - AWS::DynamoDB::Table
 
@@ -12,7 +12,7 @@ More types will be added later
 
 ## Configuration
 
-Configuration happens 'globally' (via custom.importExistingResources) and is a list of ressources to import by logical id
+Configuration happens 'globally' (via custom.importExistingResources) and is a list of resources to import by logical id
 
 ### Examples
 
