@@ -1,4 +1,3 @@
-const generateArtifactDirectoryName = require('serverless/lib/plugins/aws/package/lib/generateArtifactDirectoryName');
 const path = require('path');
 const wait = require('timers-ext/promise/sleep');
 
@@ -23,11 +22,6 @@ class ImportExistingResources {
     /** @type {import("serverless/plugins/aws/provider/awsProvider")} */
     this.provider = serverless.getProvider('aws');
     this.log = serverless.cli.log;
-
-    Object.assign(
-      this,
-      generateArtifactDirectoryName
-    );
 
     this.handledTypes = {
       'AWS::S3::Bucket': {
@@ -240,7 +234,6 @@ class ImportExistingResources {
   }
 
   async uploadTemplate(template) {
-    this.generateArtifactDirectoryName();
     const bucketName = await this.provider.getServerlessDeploymentBucketName();
     const compiledTemplateFileName = this.getTemplateFileName();
     const params = {
