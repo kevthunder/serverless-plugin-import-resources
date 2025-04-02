@@ -1,6 +1,6 @@
 {
   "name": "serverless-plugin-import-resources",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Serverless plugin that allows to import resources into an existing stack",
   "main": "index.js",
   "scripts": {

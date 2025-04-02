@@ -2,11 +2,12 @@
 
 **This is highly experimental, use at your own risk.**
 
-This plugin in ment to help importing resources into an existing stack
+This plugin in meant to help importing resources into an existing stack
 
 Currently handled resources types
 - AWS::S3::Bucket
 - AWS::DynamoDB::Table
+- AWS::Logs::LogGroup
 
 More types will be added later
 
@@ -19,6 +20,9 @@ Configuration happens 'globally' (via custom.importExistingResources) and is a l
 The importing an existing S3 bucket:
 
 ```yml
+plugins:
+  - serverless-plugin-import-resources
+
 custom:
   importExistingResources:
     - myS3ressource
@@ -32,9 +36,22 @@ resources:
       DeletionPolicy: Retain
 ```
 
+Making sure the ApiGatewayLogGroup is imported before deployment:
+
+```yml
+plugins:
+  - serverless-plugin-import-resources
+
+custom:
+  importExistingResources:
+    compiledResources:
+      - ApiGatewayLogGroup
+    beforeDeploy: true
+```
+
 ## Usage
 
-The stack must be allready existing
+The stack must be already existing
 
 
 ```sh

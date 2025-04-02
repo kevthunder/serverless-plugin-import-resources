@@ -1,5 +1,19 @@
 const path = require('path');
 const wait = require('timers-ext/promise/sleep');
+const handledTypes = require('./ResourceTypes');
+
+/**
+ * @typedef {import("serverless/plugins/aws/provider/awsProvider").CloudFormationResource & {name:string}} CloudFormationResource
+ * @property {string} name
+ */
+
+/**
+ * Config for serverless-plugin-import-resources
+ * @typedef {Object} ImportConfig
+ * @property {string[]} resources - resources to import that was defined in the serverless file
+ * @property {string[]} compiledResources - resources to import that is created by another plugin
+ * @property {boolean} beforeDeploy - always import resources before deploy
+ */
 
 async function asyncFilter(arr, filter) {
   return (await Promise.all(arr.map(async (val) => {
@@ -7,7 +21,6 @@ async function asyncFilter(arr, filter) {
     return { val: resolved, res: (await filter(resolved)) }
   }))).filter(p => p.res).map(p => p.val)
 }
-
 
 class ImportExistingResources {
   /**
@@ -23,100 +36,115 @@ class ImportExistingResources {
     this.provider = serverless.getProvider('aws');
     this.log = serverless.cli.log;
 
-    this.handledTypes = {
-      'AWS::S3::Bucket': {
-        exists: async (resource) => {
-          try {
-            await this.provider.request('S3', 'headBucket', {
-              Bucket: resource.Properties.BucketName
-            });
-            return true;
-          } catch (err) {
-            if (err.code === 'AWS_S3_HEAD_BUCKET_NOT_FOUND') {
-              return false;
-            }
-            throw err;
-          }
-        },
-        getResourceIdentifier: (resource) => {
-          return {
-            BucketName: resource.Properties.BucketName
-          };
-        }
-      },
-      'AWS::DynamoDB::Table': {
-        exists: async (resource) => {
-          try {
-            await this.provider.request('DynamoDB', 'describeTable', {
-              TableName: resource.Properties.TableName
-            });
-            return true;
-          } catch (err) {
-            if (err.code === 'AWS_S3_HEAD_BUCKET_NOT_FOUND') {
-              return false;
-            }
-            throw err;
-          }
-        },
-        getResourceIdentifier: (resource) => {
-          return {
-            TableName: resource.Properties.TableName
-          };
-        }
-      }
-    };
-
+    this.handledTypes = handledTypes;
     this.commands = {
       'import': {
-        lifecycleEvents: ['run']
+        lifecycleEvents: ['run'],
+        usage: 'Import resources into an existing stack',
+        options: {
+          cache: {
+            usage: 'use cached data when running the command a second time',
+            shortcut: 'c',
+            type: 'boolean'
+          },
+        },
       }
     };
 
     this.hooks = {
-      'import:run': async () => this.importResources()
+      'import:run': async () => this.importResources(),
+      'before:deploy:deploy': async () => this.checkBeforeDeploy()
     };
   }
 
   async importResources() {
-    if (this.serverless.service.custom.importExistingResources) {
+    const config = this.getCustomConfig();
 
-      /** @type {string[]} */
-      const toCheck = this.serverless.service.custom.importExistingResources.map((name) => this.getRessourceDefinition(name));
-      const toImport = await asyncFilter(toCheck, async (resource) => this.checkRessource(resource));
-      console.log(toImport);
-
-      if (toImport.length < 1) {
-        this.log('No ressource to import detected');
-        return;
-      }
-
-      const stackName = this.provider.naming.getStackName();
-      const template = await this.makeTemplate(toImport);
-      const TemplateUrl = await this.uploadTemplate(template);
-      const changeSetName = `${stackName}-import-change-set`;
-
-      const params = {
-        ChangeSetType: 'IMPORT',
-        ChangeSetName: changeSetName,
-        Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
-        ResourcesToImport: toImport.map(resource => this.formatResourceToImport(resource)),
-        TemplateURL: TemplateUrl,
-        StackName: stackName
-      };
-      console.log(params);
-      await this.provider.request('CloudFormation', 'createChangeSet', params);
-
-      await this.waitForChangeSetCreation(changeSetName, stackName);
-
-      await this.provider.request('CloudFormation', 'executeChangeSet', {
-        ChangeSetName: changeSetName,
-        StackName: stackName
-      });
-
-      // todo: monitor stack
+    if (!config) {
+      return;
     }
+
+    const toCheck = await this.getResourceToCheck(config)
+    const toImport = await asyncFilter(toCheck, async (resource) => this.checkResource(resource));
+    // console.log(toImport);
+
+    if (toImport.length < 1) {
+      this.log('No resource to import detected');
+      return;
+    }
+
+    const stackName = this.provider.naming.getStackName();
+    const template = await this.makeTemplate(toImport);
+    const TemplateUrl = await this.uploadTemplate(template);
+    const changeSetName = `${stackName}-import-change-set`;
+
+    const params = {
+      ChangeSetType: 'IMPORT',
+      ChangeSetName: changeSetName,
+      Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
+      ResourcesToImport: toImport.map(resource => this.formatResourceToImport(resource)),
+      TemplateURL: TemplateUrl,
+      StackName: stackName
+    };
+    // console.log(params);
+    await this.provider.request('CloudFormation', 'createChangeSet', params);
+
+    await this.waitForChangeSetCreation(changeSetName, stackName);
+
+    await this.provider.request('CloudFormation', 'executeChangeSet', {
+      ChangeSetName: changeSetName,
+      StackName: stackName
+    });
+
+    // todo: monitor stack
   }
 
+  async checkBeforeDeploy() {
+    const config = this.getCustomConfig();
+
+    if (!config?.beforeDeploy) {
+      return;
+    }
+    
+    await this.serverless.pluginManager.spawn('import')
+  }
+  
+  
+  /**
+   * 
+   * @param {string} ImportConfig 
+   * @returns {Promise<CloudFormationResource[]>}
+   */
+  async getResourceToCheck(config) {
+    const cacheFile = path.join(
+      this.serverless.serviceDir,
+      '.serverless',
+      this.getCacheFileName()
+    );
+    if(this.options.cache && this.serverless.utils.fileExistsSync(cacheFile)){
+      const content = await this.serverless.utils.readFile(
+        cacheFile
+      );
+      return content;
+    }
+
+    if(config.compiledResources.length > 0 && !this.serverless.service.provider.compiledCloudFormationTemplate){
+      await this.serverless.pluginManager.spawn('package')
+    }
+
+    /** @type {string[]} */
+    const resourceNames = [...config.resources,...config.compiledResources];
+    const toCheck = resourceNames.map((name) => this.getResourceDefinition(name));
+
+    if(this.options.cache){
+      await this.serverless.utils.writeFile(
+        cacheFile,
+        JSON.stringify(toCheck,null,'  ')
+      );
+    }
+
+    return toCheck;
+  }
   /**
    * 
    * @param {string} name 
@@ -125,8 +153,31 @@ class ImportExistingResources {
     console.log(this.serverless.service.resources.Resources[name]);
   }
 
-  getRessourceDefinition(name) {
-    const resource = this.serverless.service.resources.Resources[name];
+  /**
+   * 
+   * @returns {ImportConfig}
+   */
+  getCustomConfig() {
+    let config = this.serverless.service.custom.importExistingResources;
+    if (!config) {
+      return null;
+    }
+    if (Array.isArray(config)) {
+      config = {
+        resources: config
+      }
+    }
+    const defaults = {
+      resources: [],
+      compiledResources: []
+    }
+    return { ...defaults, ...config }
+  }
+
+  getResourceDefinition(name) {
+    // console.log(this.serverless.service.resources);
+    // console.log(this.serverless.service.provider.compiledCloudFormationTemplate?.Resources);
+    const resource = this.serverless.service.provider.compiledCloudFormationTemplate?.Resources[name] || this.serverless.service.resources.Resources[name];
     if (!resource) {
       throw new Error(`Resource not defined ${name}`);
     }
@@ -139,25 +190,30 @@ class ImportExistingResources {
   /**
    * 
    * @param {string} name 
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  async ressourceExists(resource) {
-    return this.handledTypes[resource.Type].exists(resource);
+  async resourceExists(resource) {
+    return this.handledTypes[resource.Type].exists(resource, this.provider);
   }
 
   /**
    * 
    * @param {string} name 
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  async checkRessource(resource) {
-    if (! await this.ressourceExists(resource)) {
+  async checkResource(resource) {
+    if (! await this.resourceExists(resource)) {
       return false;
     }
     const template = await this.getCurrentTemplate();
     return !template.Resources[resource.name];
   }
 
+  /**
+   * 
+   * @param {CloudFormationResource} resource 
+   * @returns {Promise<import("aws-sdk").CloudFormation.ResourceToImport>}
+   */
   formatResourceToImport(resource) {
     return {
       ResourceType: resource.Type,
@@ -214,7 +270,7 @@ class ImportExistingResources {
       '.serverless',
       this.getTemplateFileName()
     );
-    this.serverless.utils.writeFile(
+    await this.serverless.utils.writeFile(
       compiledTemplateFilePath,
       template
     );
@@ -224,6 +280,9 @@ class ImportExistingResources {
 
   getTemplateFileName() {
     return 'compiled-cloudformation-import-template.json';
+  }
+  getCacheFileName() {
+    return 'import-existing-resources-to-check.json';
   }
 
   async getTemplateUrl() {
@@ -244,7 +303,6 @@ class ImportExistingResources {
     };
     await this.provider.request('S3', 'upload', params);
     return this.getTemplateUrl();
-    throw new Error('not implemented');
   }
 
   async waitForChangeSetCreation(changeSetName, stackName) {
