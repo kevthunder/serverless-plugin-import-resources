@@ -1,6 +1,7 @@
 const path = require('path');
-const wait = require('timers-ext/promise/sleep');
 const handledTypes = require('./ResourceTypes');
+const { waitForChangeSetCreation } = require('./utils/wait-for-change-set-creation');
+const { monitorStack } = require('./utils/monitor-stack');
 
 /**
  * @typedef {import("serverless/plugins/aws/provider/awsProvider").CloudFormationResource & {name:string}} CloudFormationResource
@@ -48,12 +49,18 @@ class ImportExistingResources {
             type: 'boolean'
           },
         },
+        commands: {
+          'monitor': {
+            lifecycleEvents: ['monitor'],
+          }
+        }
       }
     };
 
     this.hooks = {
       'import:run': async () => this.importResources(),
-      'before:deploy:deploy': async () => this.checkBeforeDeploy()
+      'before:deploy:deploy': async () => this.checkBeforeDeploy(),
+      'import:monitor:monitor': async () => this.monitorStack()
     };
   }
 
@@ -78,6 +85,7 @@ class ImportExistingResources {
     const TemplateUrl = await this.uploadTemplate(template);
     const changeSetName = `${stackName}-import-change-set`;
 
+    /** @type {import("aws-sdk").CloudFormation.CreateChangeSetInput} */
     const params = {
       ChangeSetType: 'IMPORT',
       ChangeSetName: changeSetName,
@@ -89,14 +97,14 @@ class ImportExistingResources {
     // console.log(params);
     await this.provider.request('CloudFormation', 'createChangeSet', params);
 
-    await this.waitForChangeSetCreation(changeSetName, stackName);
+    await waitForChangeSetCreation(changeSetName, stackName, this.provider);
 
     await this.provider.request('CloudFormation', 'executeChangeSet', {
       ChangeSetName: changeSetName,
       StackName: stackName
     });
 
-    // todo: monitor stack
+    await monitorStack(changeSetName, stackName, this.provider)
   }
 
   async checkBeforeDeploy() {
@@ -107,6 +115,13 @@ class ImportExistingResources {
     }
     
     await this.serverless.pluginManager.spawn('import')
+  }
+
+  async monitorStack() {
+    const stackName = this.provider.naming.getStackName();
+    const changeSetName = `${stackName}-import-change-set`;
+    
+    await monitorStack(changeSetName, stackName, this.provider)
   }
   
   
@@ -129,7 +144,7 @@ class ImportExistingResources {
     }
 
     if(config.compiledResources.length > 0 && !this.serverless.service.provider.compiledCloudFormationTemplate){
-      await this.serverless.pluginManager.spawn('package')
+      await this.serverless.pluginManager.spawn('package');
     }
 
     /** @type {string[]} */
@@ -144,13 +159,6 @@ class ImportExistingResources {
     }
 
     return toCheck;
-  }
-  /**
-   * 
-   * @param {string} name 
-   */
-  async importResource(name) {
-    console.log(this.serverless.service.resources.Resources[name]);
   }
 
   /**
@@ -251,18 +259,33 @@ class ImportExistingResources {
       '.serverless',
       compiledTemplateFileName
     );
+
+    if(!this.serverless.utils.fileExistsSync(compiledTemplateFilePath)) {
+      await this.serverless.pluginManager.spawn('package');
+    }
+
     return this.serverless.utils.readFile(
       compiledTemplateFilePath
     );
   }
 
 
+  
+  /**
+   * 
+   * @param {CloudFormationResource[]} resources 
+   */
   async makeTemplate(resources) {
     const template = await this.getCurrentTemplate();
     const targetTemplate = await this.getTargetTemplate();
     resources.forEach((resource) => Object.assign(
       template.Resources,
-      { [resource.name]: targetTemplate.Resources[resource.name] }
+      { 
+        [resource.name]: {
+          DeletionPolicy: "Delete",
+          ...targetTemplate.Resources[resource.name]
+        } 
+      }
     ));
 
     const compiledTemplateFilePath = path.join(
@@ -303,42 +326,6 @@ class ImportExistingResources {
     };
     await this.provider.request('S3', 'upload', params);
     return this.getTemplateUrl();
-  }
-
-  async waitForChangeSetCreation(changeSetName, stackName) {
-    const params = {
-      ChangeSetName: changeSetName,
-      StackName: stackName,
-    };
-
-    const callWithRetry = async () => {
-      const changeSetDescription = await this.provider.request(
-        'CloudFormation',
-        'describeChangeSet',
-        params
-      );
-      if (
-        changeSetDescription.Status === 'CREATE_COMPLETE'
-      ) {
-        return changeSetDescription;
-      }
-
-      if (
-        changeSetDescription.Status === 'CREATE_PENDING' ||
-        changeSetDescription.Status === 'CREATE_IN_PROGRESS'
-      ) {
-        this.log('Change Set did not reach desired state, retrying');
-        await wait(5000);
-        return await callWithRetry();
-      }
-
-      throw new Error(
-        `Could not create Change Set "${changeSetDescription.ChangeSetName}" due to: ${changeSetDescription.StatusReason}`
-      );
-    };
-
-    return await callWithRetry();
-
   }
 }
 
